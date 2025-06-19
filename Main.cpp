@@ -159,3 +159,54 @@ void log() {
 
 //---------------------CLI interface---------------------
 
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        cout << "MiniGit - A simple version control system\n";
+        return 1;
+    }
+    string command = argv[1];
+
+    if (command == "init") {
+        init();
+    }
+    else if (command == "add") {
+        if (argc < 3) {
+            cerr << "Error: Missing filename\n";
+            return 1;
+        }
+        add(argv[2]);
+    }
+    else if (command == "commit") {
+        if (argc < 4 || string(argv[2]) != "-m"){
+            cerr << "rror: Use 'commit -m \"message\"'\n";
+            return 1;
+        }
+        commit(argv[3]);
+    }
+    else if (command == "log") {
+        if (argc < 3) {
+            cerr << "Error: Missing branch name\n";
+            return 1;   
+        }
+        cout << "Created branch '" << argv[2] << "'\n";
+    }
+    else if (command == "checkout") {
+        if (argc < 3) {
+            cerr << "Error: Missing branch name\n";
+            return 1;
+        }
+        cout << "switched to branch '" << argv[2] << "'\n";
+    }
+    else if (command == "merge") {
+        if (argc < 3) {
+            cerr << "Error: Missing branch name\n";
+            return 1;
+        }
+        cout << "merged '" << argv[2] << "'into current branch\n";
+    }
+    else {
+        cerr << "Unknown command: " << command << "\n";
+        return 1;
+    }
+    return 0;
+}
