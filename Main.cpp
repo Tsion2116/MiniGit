@@ -57,5 +57,71 @@ void add(const string& filename) {
     cout << "Added '" << filename << "' to staging area.\n";
 }   
 
+void commit(const std::string& message) {
+  if(stagedFiles.empty()) {
+    std::cerr<< "no changes stages for commit.\n";
+    return;
+  }
+
+  Commit newCommit;
+  newCommit.parents.push_back(currentCommit.hash);
+  newCommit.message = message;
+  newCommit.timestamp = time(nullptr);
+  newCommit.fileHashes = currentCommit.fileHashes;
+
+    //update with staged files
+
+  for(const auto& filename : stagedFiles) {
+    std::string content = readFile(filename);
+    newCommit.fileHashes[filename] = computeHash(content);
+  }
+  //compute commit hash
+
+  std::stringstream commitData;
+  commitData<< newCommit.parents[0]<<newCommit.message<<newCommit.timestamp;
+  for(const auto& file : newCommit.fileHashes){
+    commitData << file.first <<file.second;
+  }
+  newCommit.hash = computeHash(commitData.str());
+
+  //save commit 
+
+  std::ofstream commitFile(".minigit/objects/" + newCommit.hash);
+  commitFile << newCommit.message <<"\n";
+  commitFile << newCommit.timestamp <<"\n";
+  
+  for(const auto& parent : newCommit.parents) commitFile << parent << "";
+  commitFile << "\n";
+  for(const auto& file : newCommit.fileHashes){
+    commitFile << file.first << "" <<file.second << "\n";
+  }
+  commitFile.close();
+
+  //update references
+
+  branches[currentBranch] = newCommit.hash;
+  currentCommit = newCommit;
+  stagedFiles.clear();
+
+  std::cout << "" << currentBranch << "" << newCommit.hash.substr(0,7) << " " << message << "\n";
+  
+}
+
+void log() {
+    Commit commit = currentCommit;
+    while(true){
+        std::cout << "commit" << commit.hash << "\n";
+        std::cout << "date:" <<std::ctime(&commit.timestamp);
+        std::cout << "  " << commit.message << "\n\n";
+
+    if(commit.parents.empty()) break;
+
+    // load parent commit (simplified - in real impl you'd read from file)
+    Commit parent;
+    parent.Hash = commit.parents[0];
+    commit = parent;
+    }
+}
+
 //---------------------CLI interface---------------------
 
