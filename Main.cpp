@@ -6,17 +6,52 @@
 #include<vector>
 #include<ctime>
 #include<direct.h>
+#include<io.h>
 using namespace std;
 //---------------------Data Structures----------------------
-
-
-
-
-
+struct Blob{
+    string hash;
+    string content;
+};
+struct Commit{
+    string hash;
+    vector<string> parents;
+    string message;
+    time_t timestamp;
+    unordered_map<string,string>
+    filehashes; 
+};
+//global state
+unordered_map<string, string>
+branches;
+unordered_set<string> stagedFiles;
+string currentBranch ="master";
+Commit currentCommit;
 //---------------------Helper Functions---------------------
-
-
-
+bool dirExists(const string& path){
+    return (_access(path.c_str(),0)==0);
+}
+bool fileExists(const string& filename){
+    ifstream file(filename);
+    return file.good();
+}
+string readFile(const string& filename){
+    ifstream file(filename);
+    return
+    string((istreambuf_iterator<char>(file)),
+    istreambuf_iterator<char>());
+}
+void writeFile(const string& filename,const string& content){
+    ofstream file(filename);
+    file<< content;
+}
+string computeHash(const string& content){
+    unsigned long hash= 5381;
+    for(char c : content) hash =((hash << 5) +hash) +c;
+    stringstream ss;
+    ss << hex<< hash;
+    return ss.str();
+}
 //---------------------Main Functions---------------------
  void init(){
     if (dirExists(".minigit")){
