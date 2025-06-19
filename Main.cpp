@@ -18,8 +18,7 @@ struct Commit{
     vector<string> parents;
     string message;
     time_t timestamp;
-    unordered_map<string,string>
-    filehashes; 
+    unordered_map<string,string>fileHashes; 
 };
 //global state
 unordered_map<string, string>
@@ -63,7 +62,7 @@ string computeHash(const string& content){
        _mkdir(".minigit/refs");
        // initial commit
        Commit initialCommit;
-       initialComit.hash =computeHash("init");
+       initialCommit.hash =computeHash("init");
        initialCommit.message = "Initial commit";
        initialCommit.timestamp = time(nullptr);     
          // Save initial commit 
