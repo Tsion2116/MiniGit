@@ -152,7 +152,7 @@ void log() {
 
     // load parent commit (simplified - in real impl you'd read from file)
     Commit parent;
-    parent.Hash = commit.parents[0];
+    parent.hash = commit.parents[0];
     commit = parent;
     }
 }
