@@ -1,13 +1,19 @@
 #include <iostream>
-#include<fstream>
-#include<sstream>
-#include<unordered_map>
-#include<unordered_set>
-#include<vector>
-#include<ctime>
-#include<direct.h>
-#include<io.h>
+#include <fstream>
+#include <sstream>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include <ctime>
+#include <direct.h>
+#include <io.h>
+#include <algorithm>
+#include <map>
+#include <string>
+#include <filesystem>
 using namespace std;
+namespace fs = std::filesystem;
+
 //---------------------Data Structures----------------------
 struct Blob{
     string hash;
@@ -20,10 +26,10 @@ struct Commit{
     time_t timestamp;
     unordered_map<string,string>fileHashes; 
 };
-//global state
-unordered_map<string, string>
-branches;
-unordered_set<string> stagedFiles;
+//---------------------Global Variables---------------------
+unordered_map<string, string> branches; //branch name -> commit hash
+unordered_set<string, string> stagedFiles; //filename -> hash
+unordered_set<string, string> workingDirectoryFiles; //filename -> content
 string currentBranch ="master";
 Commit currentCommit;
 //---------------------Helper Functions---------------------
@@ -36,12 +42,19 @@ bool fileExists(const string& filename){
 }
 string readFile(const string& filename){
     ifstream file(filename);
-    return
-    string((istreambuf_iterator<char>(file)),
+    if (!file) {
+        cerr << "Error: Unable to read file '" << filename << "'\n";
+        return "";
+    }
+    return string((istreambuf_iterator<char>(file)), 
     istreambuf_iterator<char>());
 }
 void writeFile(const string& filename,const string& content){
     ofstream file(filename);
+    if (!file) {
+        cerr << "Error: Unable to write to file '" << filename << "'\n";
+        return;
+    }
     file<< content;
 }
 string computeHash(const string& content){
@@ -51,93 +64,249 @@ string computeHash(const string& content){
     ss << hex<< hash;
     return ss.str();
 }
+Commit loadCommit(const string& hash){
+    Commit commit;
+    string commitPath = ".minigit/objects/" + hash;
+    ifstream commitFile(commitFilePath);
+    if (!commitFile) {
+        cerr << "Error: Commit " << hash << " not found at" << commitPath << "\n";
+        return commit;
+    }
+    commit.hash = hash;
+    getline(commitFile, commit.message);
+    commitFile >> commit.timestamp;
+    commitFile.ignore(); // ignore/skip newline after timestamp
+    string parentLine;
+    getline(commitFile, parentLine);
+    istringstream parentStream(parentLine);
+    string parent;
+    while (parentStream >> parent) {
+        commit.parents.push_back(parent);
+    }
+    string fileLine;
+    while (getline(commitFile, fileLine)) {
+        size_t spacePos = fileLine.find(' ');
+        if (spacePos != string::npos) {
+            string filename = fileLine.substr(0, spacePos);
+            string fileHash = fileLine.substr(spacePos + 1);
+            commit.fileHashes[filename] = fileHash;
+        }
+}
+return commit;
+}
+Commit loadCurrentCommit() {
+    //Read the HEAD file to get the current branch
+    ifstream headFile(".minigit/HEAD");
+    if (!headFile) {
+        cerr << "Error: Unable to read HEAD file.\n";
+        return Commit();
+    }
+    string headRef;
+    getline(headFile, headRef);
+    if (headRef.find("ref:") == 0) {
+        // Extract branch name
+        size_t pos = headRef.find("refs/heads/");
+        if (pos != string::npos) {
+            currentBranch = headRef.substr(pos + 11);
+    }
+    headFile.close();
+    // Read the branch file to get the commit hash
+    string branchFilePath = ".minigit/refs/heads/" + currentBranch;
+    ifstream branchFile(branchFilePath);
+    if (!branchFile) {
+        cerr << "Error: Unable to read branch file for " << currentBranch << "\n";
+        return Commit();
+    }
+    string commitHash;
+    getline(branchFile, commitHash);
+    branchFile.close();
+    if (commitHash.empty()) {
+        cerr << "Error: No commit found for branch " << currentBranch << "\n";
+        return Commit();
+    }
+    // Load the commit
+    return loadCommit(commitHash);
+}
+void updateWorkingDirectory(const Commit& commit) {
+    // Clear the current working directory files
+    for (auto& file : workingDirectoryFiles) {
+        remove(file.first.c_str());
+    }
+    workingDirectoryFiles.clear();
+    // Load files from the commit
+    for (const auto& file : commit.fileHashes) {
+        ifstream blobFile(".minigit/objects/" + file.second);
+        if (blobFile) {
+            string content((istreambuf_iterator<char>(blobFile)),
+            istreambuf_iterator<char>());
+            writeFile(file.first, content);
+            workingDirectoryFiles[file.first] = content;
+        }
+    }
+}
+//--------------------- Persistent staging Area---------------------
+void saveStagedFiles() {
+    ofstream stagedFile(".minigit/staged");
+    if (!stagedFile) {
+        cerr << "Error: Failed to save staged filews.\n";
+        return;
+    }
+    for (const auto& [file, hash] : stagedFiles) {
+        stagedFile << file << " " << hash << "\n";
+    }
+    stagedFile.close();
+}
+void loadStagedFiles() {
+    ifstream stagedFile(".minigit/staged");
+    if (!stagedFile) return; // No staged files to load
+    stagedFiles.clear();
+    string file, hash;
+    while (stagedFile >> file >> hash) {
+        stagedFiles[file] = hash;
+    }
+    stagedFile.close();
+}
+void loadBranches() {
+    branches.clear();
+    string refsPath = ".minigit/refs/heads";
+    for (const auto& entry : fs::directory_iterator(refsPath)) {
+        if (fs::is_regular_file(entry.status())) {
+            string branchName = entry.path().filename().string();
+            ifstream branchFile(entry.path());
+            if (branchFile) {
+                string commitHash;
+                getline(branchFile, commitHash);
+                branches[branchName] = commitHash;
+            }
+        }
+    }
+}
 //---------------------Main Functions---------------------
  void init(){
     if (dirExists(".minigit")){
-        cout<<"MiniGit repository already exists.\n";
+        cerr << "Error: MiniGit repository already exists.\n";
         return;
        }
-       _mkdir(".minigit");
-       _mkdir(".minigit/objects");
-       _mkdir(".minigit/refs");
+       if (_mkdir(".minigit") || _mkdir(".minigit/objects") || _mkdir(".minigit/refs") || _mkdir(".minigit/refs/heads")) {
+           cerr << "Error: Failed to create necessary MiniGit directory structure.\n";
+           return;
+       }
        // initial commit
        Commit initialCommit;
        initialCommit.hash =computeHash("init");
        initialCommit.message = "Initial commit";
        initialCommit.timestamp = time(nullptr);     
-         // Save initial commit 
-         ofstream commitFile(".minigit/objects/" + initialCommit.hash);
-            commitFile << initialCommit.message << "\n" << initialCommit.timestamp << "\n";
-         commitFile.close();
-         // Create HEAD
+        // Save initial commit 
+        ofstream commitFile(".minigit/objects/" + initialCommit.hash);
+        if (!commitFile) {
+            cerr << "Error: Failed to create initial commit file.\n";
+            return;
+        }
+        commitFile << initialCommit.message << "\n" << initialCommit.timestamp << "\n\n";
+        commitFile.close();
+        // Create master branch
+        ofstream masterFile(".minigit/refs/heads/master");
+        if (!masterFile) {
+            cerr << "Error: Failed to create master branch file.\n";
+            return;
+        }
+        masterFile << initialCommit.hash;
+        masterFile.close();
+        // Create HEAD
             ofstream headFile(".minigit/HEAD");
+            if (!headFile) {
+                cerr << "Error: Failed to create HEAD file.\n";
+                return;
+            }
             headFile << "ref: refs/heads/master";
             headFile.close();
-            cout << "Initialized empty MiniGit repository\n";
+            currentCommit = initialCommit;
+            branches["master"] = initialCommit.hash;
+            cout << "Initialized empty MiniGit repository.\n";
  }
 void add(const string& filename) {
-    if (!fileExists(filename)) {
-        cerr << "Error: File '" << filename << "' does not exist.\n";
+    if (!dirExists(".minigit")) {
+        cerr << "Error: No MiniGit repository found. Please run 'minigit init'.\n";
         return;
     }
-
     string content = readFile(filename);
     string hash = computeHash(content); 
     // Save blob in .minigit/objects
     ofstream blobFile(".minigit/objects/" + hash);
+    if (!blobFile) {
+        cerr << "Error: Failed to create blob file for '" << filename << "'.\n";
+        return;
+    }
     blobFile << content;        
     blobFile.close();   
-    stagedFiles.insert(filename);
+    stagedFiles[filename] = hash; // Add to staged files
+    saveStagedFiles(); // Save staged files to disk
     cout << "Added '" << filename << "' to staging area.\n";
 }   
 
-void commit(const std::string& message) {
-  if(stagedFiles.empty()) {
-    std::cerr<< "no changes stages for commit.\n";
-    return;
-  }
+void commit(const string& message) {
+    if(stagedFiles.empty()) {
+        cerr<< "Error: Nothing staged for commit.\n";
+        return;
+    }
 
-  Commit newCommit;
-  newCommit.parents.push_back(currentCommit.hash);
-  newCommit.message = message;
-  newCommit.timestamp = time(nullptr);
-  newCommit.fileHashes = currentCommit.fileHashes;
+    Commit newCommit;
+    newCommit.message = message;
+    newCommit.timestamp = time(nullptr);
 
-    //update with staged files
+    if (!currentCommit.hash.empty()) {
+        newCommit.parents.push_back(currentCommit.hash);
+    }
 
-  for(const auto& filename : stagedFiles) {
-    std::string content = readFile(filename);
-    newCommit.fileHashes[filename] = computeHash(content);
-  }
+    newCommit.fileHashes = currentCommit.fileHashes;
+
+    //update file hashes with staged files
+
+    for(const auto& [filename, hash] : stagedFiles) {
+        newCommit.fileHashes[filename] = hash;
+    }
   //compute commit hash
 
-  std::stringstream commitData;
-  commitData<< newCommit.parents[0]<<newCommit.message<<newCommit.timestamp;
-  for(const auto& file : newCommit.fileHashes){
-    commitData << file.first <<file.second;
-  }
-  newCommit.hash = computeHash(commitData.str());
+stringstream commitData;
+commitData  << newCommit.message << newCommit.timestamp;
+for(const auto& [file, hash] : newCommit.fileHashes){
+    commitData << file << hash;
+}
+newCommit.hash = computeHash(commitData.str());
 
-  //save commit 
+  //save the commit object
 
-  std::ofstream commitFile(".minigit/objects/" + newCommit.hash);
-  commitFile << newCommit.message <<"\n";
-  commitFile << newCommit.timestamp <<"\n";
+ofstream commitFile(".minigit/objects/" + newCommit.hash);
+if (!commitFile) {
+    cerr << "Error: Failed to create commit object.\n";
+    return;
+}
+commitFile << newCommit.message <<"\n" << newCommit.timestamp <<"\n";
   
-  for(const auto& parent : newCommit.parents) commitFile << parent << "";
-  commitFile << "\n";
-  for(const auto& file : newCommit.fileHashes){
-    commitFile << file.first << "" <<file.second << "\n";
-  }
-  commitFile.close();
+for(const auto& parent : newCommit.parents){
+    commitFile << parent << "";
+}
+commitFile << "\n";
+for(const auto& [file, hash] : newCommit.fileHashes){
+    commitFile << file << "" << hash << "\n";
+}
+commitFile.close();
 
-  //update references
+//update references
 
-  branches[currentBranch] = newCommit.hash;
-  currentCommit = newCommit;
-  stagedFiles.clear();
+branches[currentBranch] = newCommit.hash;
+ofstream branchFile(".minigit/refs/heads/" + currentBranch);
+if (!branchFile) {
+    cerr << "Error: Failed to update branch reference.\n";
+    return;
+}
+branchFile << newCommit.hash;
+branchFile.close();
+currentCommit = newCommit;
+stagedFiles.clear();
+saveStagedFiles(); // Clear staged files after commit
 
-  std::cout << "" << currentBranch << "" << newCommit.hash.substr(0,7) << " " << message << "\n";
+cout << "[" << currentBranch << "" << newCommit.hash.substr(0,7) << "]" << message << "\n";
   
 }
 
