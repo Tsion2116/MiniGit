@@ -156,7 +156,202 @@ void log() {
     commit = parent;
     }
 }
+void createBranch(const string& branchName){
+    if(branches.find(branchName)!=branches.end()){
+        cerr<< "Error: Branch '" << branchName << "' already exists.\n";
+        return;
+    }
+    branches[branchName] = currentCommit.hash;
 
+    ofstream branchFile(".minigit/refs/heads/" + branchName);
+    if(!branchFile){
+        cerr<<"Error: Failed to create branch file.\n";
+        return;
+    }
+    branchFile << currentCommit.hash;
+    branchFile.close();
+
+    cout << "Created branch '"<< branchName << "'\n";
+}
+
+void checkoutBranch(const string& branchName){
+    if(branches.find(branchName)==branches.end()){
+        cerr <<"Error: Branch '" << branchName << "' does not exist.\n";
+        return;
+    }
+
+    string commitHash = branches[branchName];
+    Commit targetCommit = loadCommit(commitHash);
+    updateWorkingDirectory(targetCommit);
+
+    ofstream headFile(".minigit/HEAD");
+    if(!headFile){
+        cerr<<"Error: Failed to update HEAD.\n";
+        return;
+    }
+    headFile << "ref: refs/heads/" << branchName;
+    headFile.close();
+
+    currentBranch= branchName;
+    currentCommit= targetCommit;
+    cout<<"Switched to branch '"<<branchName<< "'\n";
+}
+
+string findLCA(const string& commitHash1, const string& commitHash2){
+    map<string,bool> visited;
+    vector<string> toVisit1={commitHash1};
+    vector<string> toVisit2={commitHash2};
+
+    while(!toVisit1.empty() || !toVisit2.empty()){
+        if(!toVisit1.empty()){
+            string current=toVisit1.back();
+            toVisit1.pop_back();
+            if(visited[current]) return current;
+            visited[current]=true;
+
+            Commit commit=loadCommit(current);
+            for(const string& parent: commit.parents){
+                toVisit1.push_back(parent);
+            }
+        }
+        if(!toVisit2.empty()){
+            string current=toVisit2.back();
+            toVisit2.pop_back();
+            if(visited[current]) return current;
+            visited[current]=true;
+
+            Commit commit=loadCommit(current);
+            for(const string& parent:commit.parents){
+                toVisit2.push_back(parent);
+            }
+        }
+    }
+    return "";
+}
+
+void merge(const string& branchName){
+    if(branches.find(branchName) == branches.end()){
+        cerr << "Error: Branch '"<<branchName<< "' does not exist.\n";
+        return;
+    }
+    if(currentBranch == branchName){
+        cerr<<"Error: Cannot merge a branch with itself.\n";
+        return;
+    }
+
+    string ourCommitHash=currentCommit.hash;
+    string theirCommitHash=branches[branchName];
+    string lcaHash = findLCA(ourCommitHash, theirCommitHash);
+    if(lcaHash.empty()){
+        cerr<<"Error: Could not find common ancestor\n";
+        return;
+    }
+
+    Commit lcaCommit=loadCommit(lcaHash);
+    Commit ourCommit=currentCommit;
+    Commit theirCommit=loadCommit(theirCommitHash);
+
+    bool hasConflicts=false;
+    unordered_set<string> allFiles;
+
+    for(const auto& file:lcaCommit.fileHashes){
+        allFiles.insert(file.first);
+    }
+    for(const auto& file:ourCommit.fileHashes){
+        allFiles.insert(file.first);
+    }
+    for(const auto& file:theirCommit.fileHashes){
+        allFiles.insert(file.first);
+    }
+
+    for(const string& filename:allFiles){
+        string lcaHash=lcaCommit.fileHashes.count(filename)? lcaCommit.fileHashes.at(filename):"";
+        string ourHash=ourCommit.fileHashes.count(filename)? ourCommit.fileHashes.at(filename):"";
+        string theirHash=theirCommit.fileHashes.count(filename)? theirCommit.fileHashes.at(filename):"";
+
+        if(ourHash==theirHash){
+            continue;
+        } else if(lcaHash==ourHash){
+            if(!theirHash.empty()){
+                ifstream blobFile(".minigit/objects/"+ theirHash);
+                string content((istreambuf_iterator<char>(blobFile)), istreambuf_iterator<char>());
+                writeFile(filename, content);
+                stagedFiles[filename]=theirHash;
+            }
+        } else if (lcaHash==theirHash){
+            continue;
+        }else{
+            cerr<<"CONFLICT: Both modified" << filename <<"\n";
+            hasConflicts=true;
+
+            string ourContent, theirContent;
+            if(!ourHash.empty()){
+                ifstream theirBlob(".minigit/objects/"+ theirHash);
+                theirContent= string((istreambuf_iterator<char>(theirBlob)), istreambuf_iterator<char>());
+            }
+
+            string conflictContent="<<<<<<< HEAD\n"+ ourContent + "=======\n" + theirContent + ">>>>>>> "+ branchName+"\n";
+            writeFile(filename, conflictContent);
+            stagedFiles[filename]= computeHash(conflictContent);
+        }
+    }
+    saveStagedFiles();
+
+    if(hasConflicts){
+        cout<<"Automatic merge failed; fix conflicts and then commit result.\n";
+    } else{
+        string message="Merge branch '"+branchName+"' into "+currentBranch;
+        commit(message);
+    }
+}
+
+void diff(const string& commitHash1, const string& commitHash2){
+    Commit commit1=loadCommit(commitHash1);
+    Commit commit2=loadCommit(commitHash2);
+
+    if(commit1.hash.empty() || commit2.hash.empty()){
+        cerr << "Error: Invalid commit hashes\n";
+        return;
+    }
+
+    unordered_set<string> allFiles;
+    for(const auto& file: commit1.fileHashes) allFiles.insert(file.first);
+    for(const auto& file: commit2.fileHashes) allFiles.insert(file.first);
+
+    for(const string& filename:allFiles){
+        string hash1=commit1.fileHashes.count(filename)? commit1.fileHashes.at(filename):"";
+        string hash2=commit2.fileHashes.count(filename)? commit2.fileHashes.at(filename):"";
+
+        if(hash1==hash2) continue;
+        cout<<"diff --git a/" <<filename<<" b/" <<filename<<"\n";
+
+        string content1, content2;
+        if(!hash1.empty()){
+            ifstream blob1(".minigit/objects/" + hash1);
+            content1= string((istreambuf_iterator<char>(blob1)), istreambuf_iterator<char>());
+        }
+        if(!hash2.empty()){
+            ifstream blob2(".minigit/objects/"+ hash2);
+            content2= string((istreambuf_iterator<char>(blob2)), istreambuf_iterator<char>());
+        }
+
+        istringstream stream1(content1);
+        istringstream stream2(content2);
+        string line1, line2;
+        int lineNum=1;
+
+        while(getline(stream1, line1) || getline(stream2, line2)){
+            if(line1!=line2){
+                cout<<"@"<<lineNum<< " +"<< lineNum<<" @"<<"\n";
+                if(!line1.empty()) cout<<"-"<<line1<<"\n";
+                if(!line2.empty()) cout<<"+"<< line2<<"\n";
+            }
+            lineNum++;
+            line1.clear();
+            line2.clear();
+        }
+    }
+}
 //---------------------CLI interface---------------------
 
 int main(int argc, char* argv[]) {
