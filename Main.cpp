@@ -143,17 +143,17 @@ void commit(const std::string& message) {
 
 void log() {
     Commit commit = currentCommit;
-    while(true){
-        std::cout << "commit" << commit.hash << "\n";
-        std::cout << "date:" <<std::ctime(&commit.timestamp);
-        std::cout << "  " << commit.message << "\n\n";
+    if(commit.hash.empty()){
+        cerr<<"Error: no commits to display.\n";
+        return;
+    }
+    while(!commit.hash.empty()){
+        cout << "commit" << commit.hash << "\n";
+        cout << "Date:" << ctime(&commit.timestamp);
+        cout << "  " << commit.message << "\n\n";
 
     if(commit.parents.empty()) break;
-
-    // load parent commit (simplified - in real impl you'd read from file)
-    Commit parent;
-    parent.hash = commit.parents[0];
-    commit = parent;
+    commit = loadCommit(commit.parents[0]);
     }
 }
 void createBranch(const string& branchName){
@@ -163,6 +163,7 @@ void createBranch(const string& branchName){
     }
     branches[branchName] = currentCommit.hash;
 
+//create branch file
     ofstream branchFile(".minigit/refs/heads/" + branchName);
     if(!branchFile){
         cerr<<"Error: Failed to create branch file.\n";
@@ -184,6 +185,7 @@ void checkoutBranch(const string& branchName){
     Commit targetCommit = loadCommit(commitHash);
     updateWorkingDirectory(targetCommit);
 
+    //update HEAD
     ofstream headFile(".minigit/HEAD");
     if(!headFile){
         cerr<<"Error: Failed to update HEAD.\n";
@@ -226,7 +228,7 @@ string findLCA(const string& commitHash1, const string& commitHash2){
             }
         }
     }
-    return "";
+    return ""; // no common ancestor found 
 }
 
 void merge(const string& branchName){
@@ -241,6 +243,8 @@ void merge(const string& branchName){
 
     string ourCommitHash=currentCommit.hash;
     string theirCommitHash=branches[branchName];
+
+    // Find LCA
     string lcaHash = findLCA(ourCommitHash, theirCommitHash);
     if(lcaHash.empty()){
         cerr<<"Error: Could not find common ancestor\n";
@@ -254,6 +258,7 @@ void merge(const string& branchName){
     bool hasConflicts=false;
     unordered_set<string> allFiles;
 
+    // Collect all files from all three commits 
     for(const auto& file:lcaCommit.fileHashes){
         allFiles.insert(file.first);
     }
@@ -264,14 +269,17 @@ void merge(const string& branchName){
         allFiles.insert(file.first);
     }
 
+    // perform three-way merge for each file 
     for(const string& filename:allFiles){
         string lcaHash=lcaCommit.fileHashes.count(filename)? lcaCommit.fileHashes.at(filename):"";
         string ourHash=ourCommit.fileHashes.count(filename)? ourCommit.fileHashes.at(filename):"";
         string theirHash=theirCommit.fileHashes.count(filename)? theirCommit.fileHashes.at(filename):"";
 
         if(ourHash==theirHash){
+            // no changes or both changed the same way
             continue;
         } else if(lcaHash==ourHash){
+            // we didn't change it, take their version 
             if(!theirHash.empty()){
                 ifstream blobFile(".minigit/objects/"+ theirHash);
                 string content((istreambuf_iterator<char>(blobFile)), istreambuf_iterator<char>());
@@ -279,13 +287,20 @@ void merge(const string& branchName){
                 stagedFiles[filename]=theirHash;
             }
         } else if (lcaHash==theirHash){
+            // they didn't change it, keep our version 
             continue;
         }else{
+            // conflict - both modified differently 
             cerr<<"CONFLICT: Both modified" << filename <<"\n";
             hasConflicts=true;
 
+            // create conflict markers 
             string ourContent, theirContent;
             if(!ourHash.empty()){
+                ifstream ourBlob(".minigit/objects/"+ ourHash);
+                ourContent= string((istreambuf_iterator<char>(ourBlob)), istreambuf_iterator<char>());
+            }
+             if(!theirHash.empty()){
                 ifstream theirBlob(".minigit/objects/"+ theirHash);
                 theirContent= string((istreambuf_iterator<char>(theirBlob)), istreambuf_iterator<char>());
             }
@@ -300,6 +315,7 @@ void merge(const string& branchName){
     if(hasConflicts){
         cout<<"Automatic merge failed; fix conflicts and then commit result.\n";
     } else{
+        // create merge commit
         string message="Merge branch '"+branchName+"' into "+currentBranch;
         commit(message);
     }
@@ -335,6 +351,7 @@ void diff(const string& commitHash1, const string& commitHash2){
             content2= string((istreambuf_iterator<char>(blob2)), istreambuf_iterator<char>());
         }
 
+        // simple line-by-line diff
         istringstream stream1(content1);
         istringstream stream2(content2);
         string line1, line2;
@@ -355,8 +372,23 @@ void diff(const string& commitHash1, const string& commitHash2){
 //---------------------CLI interface---------------------
 
 int main(int argc, char* argv[]) {
+    if(dirExists(".minigit")){
+        loadBranches(); // add this line
+        loadStagedFiles(); // load staged files at startup 
+        currentCommit = loadCurrentCommit();
+    }
     if (argc < 2) {
         cout << "MiniGit - A simple version control system\n";
+        cout << "usage: minigit <command> [<args>]\n";
+        cout << "commands:\n";
+        cout << " init\n";
+        cout << "add <file>\n";
+        cout << " commit -m \"message\"\n";
+        cout << "log\n";
+        cout << "branch <branch-name>\n";
+        cout << "checkout <branch-name>\n";
+        cout << "merge <branch-name>\n";
+        cout << "diff <commit1> <commit2>\n";
         return 1;
     }
     string command = argv[1];
@@ -373,34 +405,51 @@ int main(int argc, char* argv[]) {
     }
     else if (command == "commit") {
         if (argc < 4 || string(argv[2]) != "-m"){
-            cerr << "rror: Use 'commit -m \"message\"'\n";
+            cerr << "Error: Use 'commit -m \"message\"'.\n";
             return 1;
         }
         commit(argv[3]);
     }
     else if (command == "log") {
-        if (argc < 3) {
-            cerr << "Error: Missing branch name\n";
-            return 1;   
+        log();
+    }
+    else if (command == "branch"){
+        if (argc == 2) {
+            cout << "available branches:\n";
+            for(const auto& [name,hash] : branches){
+                cout << (name == currentBranch ? "*" : " ") << name << "\n";
+            }
         }
-        cout << "Created branch '" << argv[2] << "'\n";
+        else if(arg == 3){
+            createBranch(argv[2]);
+        }else {
+            cerr<< "usage:minigit branch [<branch-name>]\n";
+            return 1;
+        }
     }
     else if (command == "checkout") {
         if (argc < 3) {
-            cerr << "Error: Missing branch name\n";
+            cerr << "Error: Missing branch name or commit hash.\n";
             return 1;
         }
-        cout << "switched to branch '" << argv[2] << "'\n";
+        checkoutBranch(argv[2]);
     }
     else if (command == "merge") {
         if (argc < 3) {
-            cerr << "Error: Missing branch name\n";
+            cerr << "Error: Missing branch name.\n";
             return 1;
         }
-        cout << "merged '" << argv[2] << "'into current branch\n";
+        merge(argv[2]);
+    }
+    else if(command == "diff"){
+        if(argc < 4){
+            cerr<< "Error: need two commit hashes.\n";
+            return 1;
+        }
+        diff(argv[2],argv[3]);
     }
     else {
-        cerr << "Unknown command: " << command << "\n";
+        cerr << "Error: Unknown command: " << command << "\n";
         return 1;
     }
     return 0;
